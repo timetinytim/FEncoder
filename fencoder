@@ -1,0 +1,129 @@
+#!/bin/bash
+
+# Basic vars
+NAME=fencoder
+OPERATION=""
+VIDFILE=""
+VERBOSE=0
+
+found_dovi=0
+found_hdr10=0
+found_hdr10plus=0
+
+# HDR vars
+
+# Print help
+print_help() {
+    echo "Usage: ${NAME} COMMAND FILE"
+    echo
+    echo "Commands:"
+    echo "  analyze           Analyzes the video file & generates encoding options"
+    echo "  encode            Encodes the video file"
+}
+
+# Grab CLI opts
+set +e
+options=$(
+    getopt -n ${NAME} \
+        -o hv \
+        --long help,verbose \
+        -- "$@"
+)
+[ $? -eq 0 ] || {
+    echo ; print_help
+    exit 1
+}
+eval set -- "$options"
+while true; do
+    case $1 in
+        -h|--help) print_help ; exit ;;
+        -v|--verbose) VERBOSE=1 ; shift ; break ;;
+        --) shift ; break ;;
+        *) break ;;
+    esac
+    shift
+done
+
+# Grab arguments
+shift
+OPERATION="$1"
+VIDFILE="$2"
+if [ "$OPERATION" != "encode" ] || \
+    [ "$OPERATION" != "analyze" ]
+then
+    echo "${OPERATION}: unknown command"
+    echo
+    print_help
+    exit 1
+fi
+
+# Check file
+check_file() {
+    if [ "$VIDFILE" == "" ]; then
+        echo "Please specify a video file"
+        exit 1
+    fi
+    if [ ! -f "$VIDFILE" ]; then
+        echo "${VIDFILE}: file not found"
+        exit 1
+    fi
+}
+
+# Check tool requirements
+check_requirements() {
+    set +e
+    which hdr10plus_tool dovi_tool ffmpeg jq >/dev/null
+    if [ $? -ne 0 ]; then
+        echo "Install required tools:"
+        echo "  hdr10plus_tool"
+        echo "  dovi_tool"
+        echo "  ffmpeg"
+        echo "  jq"
+        exit 1
+    fi
+    set -e
+}
+
+# Detect HDR
+check_hdr() {
+    local probe=$(
+        ffprobe -hide_banner \
+            -loglevel warning \
+            -select_streams v \
+            -print_format json \
+            -show_frames \
+            -read_intervals "%+#1" \
+            -show_entries "frame=color_space,color_primaries,color_transfer,side_data_list,pix_fmt" \
+            -i "$vidfile" \
+            2>/dev/null
+    )
+
+    local sidedata=$(
+        echo "$probe" | jq \
+            '.frames[].side_data_list[].side_data_type' \
+            2>/dev/null
+    )
+
+    set +e
+
+    echo "$sidedata" | grep "Mastering display metadata"
+    if [ $? -eq 0 ]; then
+        found_hdr10=1
+    fi
+    echo "$sidedata" | grep "HDR Dynamic Metadata"
+    if [ $? -eq 0 ]; then
+        found_hdr10plus=1
+    fi
+    echo "$sidedata" | grep "Dolby Vision Metadata"
+    if [ $? -eq 0 ]; then
+        found_dovi=1
+    fi
+
+    set -e
+}
+
+main() {
+    check_requirements
+}
+
+main
