@@ -6,9 +6,13 @@ OPERATION=""
 VIDFILE=""
 VERBOSE=0
 
-found_dovi=0
-found_hdr10=0
-found_hdr10plus=0
+# Encoding vars
+SETTINGS_CROP=""
+
+# HDR vars
+FOUND_DOVI=0
+FOUND_HDR10=0
+FOUND_HDR10PLUS=0
 
 # HDR vars
 
@@ -44,11 +48,16 @@ while true; do
     shift
 done
 
-# Grab arguments
-shift
+# Grab & check args
 OPERATION="$1"
 VIDFILE="$2"
-if [ "$OPERATION" != "encode" ] || \
+if [ "$OPERATION" == "" ]; then
+    echo "Please specify a command"
+    echo
+    print_help
+    exit 1
+fi
+if [ "$OPERATION" != "encode" ] && \
     [ "$OPERATION" != "analyze" ]
 then
     echo "${OPERATION}: unknown command"
@@ -84,8 +93,24 @@ check_requirements() {
     set -e
 }
 
+detect_settings() {
+    # Basic settings
+    SETTINGS_CROP=$(
+        ffmpeg \
+            -ss 600 \
+            -i "$VIDFILE" \
+            -t 20 \
+            -vf cropdetect \
+            -f null \
+            - 2>&1 \
+            | awk '/crop/ { print $NF }' \
+            | tail -1
+    )
+}
+
 # Detect HDR
-check_hdr() {
+detect_hdr() {
+    # FFprobe all metadata for the file
     local probe=$(
         ffprobe -hide_banner \
             -loglevel warning \
@@ -94,10 +119,11 @@ check_hdr() {
             -show_frames \
             -read_intervals "%+#1" \
             -show_entries "frame=color_space,color_primaries,color_transfer,side_data_list,pix_fmt" \
-            -i "$vidfile" \
+            -i "$VIDFILE" \
             2>/dev/null
     )
 
+    # Isolate the types of sidedata we have
     local sidedata=$(
         echo "$probe" | jq \
             '.frames[].side_data_list[].side_data_type' \
@@ -106,24 +132,45 @@ check_hdr() {
 
     set +e
 
-    echo "$sidedata" | grep "Mastering display metadata"
+    # Do we have HDR10 metadata?
+    echo "$sidedata" | grep "Mastering display metadata" >/dev/null
     if [ $? -eq 0 ]; then
-        found_hdr10=1
+        # This is a heck of a jq command, so break it up to make it easy to read
+        local jq_data=' .frames[].side_data_list[]'
+        local jq_meta=' | select(.side_data_type | strings | test("Mastering display metadata"))'
+        local jq_map=' | to_entries|map("HDR_\(.key | ascii_upcase)=\"\(.value|tostring)\"")|.[]'
+
+        local hdrvars=$(echo $probe | jq -r "${jq_data}${jq_meta}${jq_map}")
+
+        if [ $? -ne 0 ]; then
+            echo "ERROR: Couldn't read HDR10 metadata"
+            exit 1
+        fi
+        eval $hdrvars
     fi
-    echo "$sidedata" | grep "HDR Dynamic Metadata"
+
+    # Do we have HDR10+ metadata?
+    echo "$sidedata" | grep "HDR Dynamic Metadata" >/dev/null
     if [ $? -eq 0 ]; then
-        found_hdr10plus=1
+        FOUND_HDR10PLUS=1
     fi
-    echo "$sidedata" | grep "Dolby Vision Metadata"
+
+    # Do we have Dolby Vision metadata?
+    echo "$sidedata" | grep "Dolby Vision Metadata" >/dev/null
     if [ $? -eq 0 ]; then
-        found_dovi=1
+        FOUND_DOVI=1
     fi
 
     set -e
 }
 
 main() {
+    # Sanity checks
     check_requirements
+    check_file
+
+    # Analysis
+    detect_hdr
 }
 
 main
