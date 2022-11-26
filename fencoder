@@ -6,14 +6,29 @@ OPERATION=""
 VIDFILE=""
 VERBOSE=0
 
+# Starting encode settings
+X264_CRF=22
+X264_OPTS='-preset veryslow -tune film -fast-pskip 0 -partitions p8x8 -deblock -2:-2'
+X264_PARAMS='ref=5:bframes=5:output-depth=10:lookahead_threads=8'
+X265_CRF=24
+X265_OPTS='-profile:v main10'
+X265_PRESET='slower'
+X265_PIXEL_FORMAT='yuv420p10le'
+X265_PARAMS='qcomp=0.7:psy-rdoq=5:psy-rd=3'
+
 # Encoding vars
-SETTINGS_CROP=""
+SETTINGS_WIDTH=''
+SETTINGS_HEIGHT=''
+SETTINGS_CROP=''
+SETTINGS_AUDIO_TRACKS=''
+SETTINGS_SUB_TRACKS=''
+SETTINGS_VIDEO_CODEC=''
+SETTINGS_VIDEO_FILTERS=''
 
 # HDR vars
 FOUND_DOVI=0
 FOUND_HDR10=0
 FOUND_HDR10PLUS=0
-HDR_PIXEL_FORMAT=''
 HDR_COLOR_SPACE=''
 HDR_COLOR_PRIMARIES=''
 HDR_COLOR_TRANSFER=''
@@ -99,6 +114,8 @@ check_requirements() {
 
 # Detect HDR
 detect_hdr() {
+    echo "Detecting HDR information..."
+
     # FFprobe all metadata for the file
     local probe=$(
         ffprobe -hide_banner \
@@ -125,7 +142,7 @@ detect_hdr() {
     echo "$sidedata" | grep "Mastering display metadata" >/dev/null
     if [ $? -eq 0 ]; then
         # Grab basic mastering info
-        HDR_PIXEL_FORMAT=$(echo $probe | jq -r '.frames[].pix_fmt')
+        X265_PIXEL_FORMAT=$(echo $probe | jq -r '.frames[].pix_fmt')
         HDR_COLOR_SPACE=$(echo $probe | jq -r '.frames[].color_space')
         HDR_COLOR_PRIMARIES=$(echo $probe | jq -r '.frames[].color_primaries')
         HDR_COLOR_TRANSFER=$(echo $probe | jq -r '.frames[].color_transfer')
@@ -162,6 +179,8 @@ detect_hdr() {
 
 # Try to autodetect whether we need to crop the video
 detect_crop() {
+    echo "Detecting crop values..."
+
     # Detect crop
     local duration=$(
         printf "%.0f\n" $(
@@ -207,7 +226,94 @@ detect_crop() {
         else
             SETTINGS_CROP="crop=${x}:${y}:${offset_x}:${offset_y}"
         fi
+
+        # Establish what the video size is for later
+        SETTINGS_WIDTH=$x
+        SETTINGS_HEIGHT=$y
+
+    else
+        print "ERROR: Unable to parse crop information from text:"
+        print "$SETTINGS_CROP"
+        exit 1
     fi
+}
+
+
+detect_tracks() {
+    echo "Detecting tracks..."
+
+    # Probe info
+    local aprobe=$(
+        ffprobe -hide_banner -loglevel error \
+            -show_streams \
+            -show_entries stream=index:stream_tags=title,language \
+            -select_streams a \
+            -of json \
+            "$VIDFILE"
+    )
+    local sprobe=$(
+        ffprobe -hide_banner -loglevel error \
+            -show_streams \
+            -show_entries stream=index:stream_tags=title,language \
+            -select_streams s \
+            -of json \
+            "$VIDFILE"
+    )
+
+    # Parse audio info
+    local i=0
+    local index=$(echo $aprobe | jq -r ".streams[$i].index")
+    while [ "$index" != 'null' ]; do
+        local lang=$(echo $aprobe | jq -r ".streams[$i].tags.language")
+
+        local new="-map 0:${index} --metadata:s:${index} language=${lang}"
+        SETTINGS_AUDIO_TRACKS="${SETTINGS_AUDIO_TRACKS}    ${new} \\
+"
+
+        # Grab next track
+        i=$((i+1))
+        index=$(echo $aprobe | jq -r ".streams[$i].index")
+    done
+
+    echo "Audio stuff:"
+    echo "$SETTINGS_AUDIO_TRACKS"
+
+    # Parse audio info
+    i=0
+    index=$(echo $sprobe | jq -r ".streams[$i].index")
+    while [ "$index" != 'null' ]; do
+        local lang=$(echo $sprobe | jq -r ".streams[$i].tags.language")
+
+        local new="-map 0:${index} --metadata:s:${index} language=${lang}"
+        SETTINGS_SUB_TRACKS="${SETTINGS_SUB_TRACKS}    ${new} \\
+"
+
+        # Grab next track
+        i=$((i+1))
+        index=$(echo $sprobe | jq -r ".streams[$i].index")
+    done
+
+    echo "AuSubdio stuff:"
+    echo "$SETTINGS_SUB_TRACKS"
+}
+
+create_encode_file() {
+    echo "Creating runner script..."
+    local file='fencoder_run'
+    local body="#!/bin/bash
+
+ffmpeg -n
+    -hide_banner \\
+    -ss 0 \\
+    -i \"${VIDFILE}\" \\
+    -map_metadata 0 \\
+    -map_chapters 0 \\
+    -metadata title=\"Title\" \\
+    -map 0:v \\
+${SETTINGS_AUDIO_TRACKS}${SETTINGS_SUB_TRACKS}    -c copy \\
+"
+
+    echo -e "$body" > $file
 }
 
 main() {
@@ -217,7 +323,11 @@ main() {
 
     # Analysis
     detect_hdr
+    detect_tracks
     detect_crop
+
+    # Create encode file
+    create_encode_file
 }
 
 main
