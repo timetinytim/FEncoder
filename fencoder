@@ -13,6 +13,10 @@ SETTINGS_CROP=""
 FOUND_DOVI=0
 FOUND_HDR10=0
 FOUND_HDR10PLUS=0
+HDR_PIXEL_FORMAT=''
+HDR_COLOR_SPACE=''
+HDR_COLOR_PRIMARIES=''
+HDR_COLOR_TRANSFER=''
 
 # HDR vars
 
@@ -120,6 +124,13 @@ detect_hdr() {
     # Do we have HDR10 metadata?
     echo "$sidedata" | grep "Mastering display metadata" >/dev/null
     if [ $? -eq 0 ]; then
+        # Grab basic mastering info
+        HDR_PIXEL_FORMAT=$(echo $probe | jq -r '.frames[].pix_fmt')
+        HDR_COLOR_SPACE=$(echo $probe | jq -r '.frames[].color_space')
+        HDR_COLOR_PRIMARIES=$(echo $probe | jq -r '.frames[].color_primaries')
+        HDR_COLOR_TRANSFER=$(echo $probe | jq -r '.frames[].color_transfer')
+
+        # Grab mastering metadata
         # This is a heck of a jq command, so break it up to make it easy to read
         local jq_data=' .frames[].side_data_list[]'
         local jq_meta=' | select(.side_data_type | strings | test("Mastering display metadata"))'
