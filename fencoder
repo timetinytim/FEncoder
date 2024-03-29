@@ -8,7 +8,8 @@ VERBOSE=0
 
 # Starting encode settings
 X264_CRF=22
-X264_OPTS='-preset veryslow -tune film -fast-pskip 0 -partitions p8x8 -deblock -2:-2'
+X264_PRESET='veryslow'
+X264_OPTS='-tune film -fast-pskip 0 -partitions p8x8 -deblock -2:-2'
 X264_PARAMS='ref=5:bframes=5:output-depth=10:lookahead_threads=8'
 X265_CRF=24
 X265_OPTS='-profile:v main10'
@@ -103,8 +104,8 @@ check_requirements() {
     which hdr10plus_tool dovi_tool ffmpeg jq >/dev/null
     if [ $? -ne 0 ]; then
         echo "Install required tools:"
-        echo "  hdr10plus_tool"
-        echo "  dovi_tool"
+        echo "  hdr10plus_tool     https://github.com/quietvoid/hdr10plus_tool"
+        echo "  dovi_tool          https://github.com/quietvoid/dovi_tool"
         echo "  ffmpeg"
         echo "  jq"
         exit 1
@@ -267,16 +268,12 @@ detect_tracks() {
         local lang=$(echo $aprobe | jq -r ".streams[$i].tags.language")
 
         local new="-map 0:${index} --metadata:s:${index} language=${lang}"
-        SETTINGS_AUDIO_TRACKS="${SETTINGS_AUDIO_TRACKS}    ${new} \\
-"
+        SETTINGS_AUDIO_TRACKS="${SETTINGS_AUDIO_TRACKS}    ${new} \\\n"
 
         # Grab next track
         i=$((i+1))
         index=$(echo $aprobe | jq -r ".streams[$i].index")
     done
-
-    echo "Audio stuff:"
-    echo "$SETTINGS_AUDIO_TRACKS"
 
     # Parse audio info
     i=0
@@ -285,16 +282,31 @@ detect_tracks() {
         local lang=$(echo $sprobe | jq -r ".streams[$i].tags.language")
 
         local new="-map 0:${index} --metadata:s:${index} language=${lang}"
-        SETTINGS_SUB_TRACKS="${SETTINGS_SUB_TRACKS}    ${new} \\
-"
+        SETTINGS_SUB_TRACKS="${SETTINGS_SUB_TRACKS}    ${new} \\\n"
 
         # Grab next track
         i=$((i+1))
         index=$(echo $sprobe | jq -r ".streams[$i].index")
     done
+}
 
-    echo "AuSubdio stuff:"
-    echo "$SETTINGS_SUB_TRACKS"
+detect_codec() {
+    if [ $SETTINGS_WIDTH -le 854 ] || [ $SETTINGS_HEIGHT -le 480 ] ; then
+        SETTINGS_VIDEO_CODEC="    -c:v libx264 \\
+        -preset ${X264_PRESET} \\
+        -crf ${X264_CRF} \\
+        ${X264_OPTS} \\
+        -x264-params ${X264_PARAMS} \\
+"
+    else
+        SETTINGS_VIDEO_CODEC="    -c:v libx265 \\
+        -preset ${X265_PRESET} \\
+        -crf ${X265_CRF} \\
+        -pix_fmt ${X265_PIXEL_FORMAT} \\
+        ${X265_OPTS} \\
+        -x265_params ${X265_PARAMS} \\
+"
+    fi
 }
 
 create_encode_file() {
@@ -308,10 +320,16 @@ ffmpeg -n
     -i \"${VIDFILE}\" \\
     -map_metadata 0 \\
     -map_chapters 0 \\
-    -metadata title=\"Title\" \\
+    -metadata title=\"\" \\
     -map 0:v \\
 ${SETTINGS_AUDIO_TRACKS}${SETTINGS_SUB_TRACKS}    -c copy \\
+${SETTINGS_VIDEO_CODEC}
 "
+
+    if [ "$SETTINGS_CROP" != '' ]; then
+        body="${body}    -vf ${SETTINGS_CROP}
+"
+    fi
 
     echo -e "$body" > $file
 }
@@ -325,6 +343,7 @@ main() {
     detect_hdr
     detect_tracks
     detect_crop
+    detect_codec
 
     # Create encode file
     create_encode_file
