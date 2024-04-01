@@ -86,7 +86,7 @@ then
     exit 1
 fi
 
-# Check file
+# Make sure we were given a video file, and it exists.
 check_file() {
     if [ "$VIDFILE" == "" ]; then
         echo "Please specify a video file"
@@ -98,7 +98,7 @@ check_file() {
     fi
 }
 
-# Check tool requirements
+# Make sure all required CLI tools are installed.
 check_requirements() {
     set +e
     which hdr10plus_tool dovi_tool ffmpeg jq >/dev/null
@@ -113,7 +113,8 @@ check_requirements() {
     set -e
 }
 
-# Detect HDR
+# Determine whether video file has HDR.
+# HDR video files can have HDR10, HDR10+, and/or Dolby Vision metadata.
 detect_hdr() {
     echo "Detecting HDR information..."
 
@@ -239,7 +240,7 @@ detect_crop() {
     fi
 }
 
-
+# Parse video info for audio & subtitle tracks.
 detect_tracks() {
     echo "Detecting tracks..."
 
@@ -275,7 +276,7 @@ detect_tracks() {
         index=$(echo $aprobe | jq -r ".streams[$i].index")
     done
 
-    # Parse audio info
+    # Parse subtitle info
     i=0
     index=$(echo $sprobe | jq -r ".streams[$i].index")
     while [ "$index" != 'null' ]; do
@@ -290,6 +291,8 @@ detect_tracks() {
     done
 }
 
+# Determine which codec we should use for encoding.
+# SD content should use H.264, and all higher resolutions should use H.265/HEVC.
 detect_codec() {
     if [ $SETTINGS_WIDTH -le 854 ] || [ $SETTINGS_HEIGHT -le 480 ] ; then
         SETTINGS_VIDEO_CODEC="    -c:v libx264 \\
@@ -309,6 +312,7 @@ detect_codec() {
     fi
 }
 
+# Generate a script file that runs FFmpeg with all our detected options.
 create_encode_file() {
     echo "Creating runner script..."
     local file='fencoder_run'
