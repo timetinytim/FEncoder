@@ -113,6 +113,34 @@ check_requirements() {
     set -e
 }
 
+# Ensures metadata values are the correct "ratio".
+# HDR displaybrightness colors are returned by ffprobe as a ration of
+# <VALUE>/<RATIO>. We need to both strip out the /50000 for passing to the
+# ffmpeg command line, and make sure that it is, in fact, /50000, and correct
+# if not.
+process_hdr_ratios() {
+    local -n color=$1
+    local desiredRatio=$2
+
+    if [[ "$color" =~ ([0-9]+)\/([0-9]+) ]]; then
+        local value="${BASH_REMATCH[1]}"
+        local ratio="${BASH_REMATCH[2]}"
+
+        if [ $ratio -eq $desiredRatio ]; then
+            color=$value
+        else
+            local offset=$(($desiredRatio/$ratio))
+
+            color=$(($value*$offset))
+        fi
+
+    else
+        echo "Unexpected ffprobe outout for mastering display metadata"
+        exit 1
+    fi
+
+}
+
 # Determine whether video file has HDR.
 # HDR video files can have HDR10, HDR10+, and/or Dolby Vision metadata.
 detect_hdr() {
@@ -166,6 +194,17 @@ detect_hdr() {
             exit 1
         fi
         eval $hdrvars
+
+        process_hdr_ratios HDR_RED_X 50000
+        process_hdr_ratios HDR_RED_Y 50000
+        process_hdr_ratios HDR_GREEN_X 50000
+        process_hdr_ratios HDR_GREEN_Y 50000
+        process_hdr_ratios HDR_BLUE_X 50000
+        process_hdr_ratios HDR_BLUE_Y 50000
+        process_hdr_ratios HDR_WHITE_POINT_X 50000
+        process_hdr_ratios HDR_WHITE_POINT_Y 50000
+        process_hdr_ratios HDR_MAX_LUMINANCE 10000
+        process_hdr_ratios HDR_MIN_LUMINANCE 10000
 
         # Grab Content light level metadata
         # Also a heck of a jq command...
@@ -254,8 +293,8 @@ detect_crop() {
         SETTINGS_HEIGHT=$y
 
     else
-        print "ERROR: Unable to parse crop information from text:"
-        print "$SETTINGS_CROP"
+        echo "ERROR: Unable to parse crop information from text:"
+        echo "$SETTINGS_CROP"
         exit 1
     fi
 }
