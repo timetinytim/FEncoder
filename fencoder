@@ -143,6 +143,8 @@ detect_hdr() {
     # Do we have HDR10 metadata?
     echo "$sidedata" | grep "Mastering display metadata" >/dev/null
     if [ $? -eq 0 ]; then
+        FOUND_HDR10=1
+
         # Grab basic mastering info
         X265_PIXEL_FORMAT=$(echo $probe | jq -r '.frames[].pix_fmt')
         HDR_COLOR_SPACE=$(echo $probe | jq -r '.frames[].color_space')
@@ -151,6 +153,8 @@ detect_hdr() {
 
         # Grab mastering metadata
         # This is a heck of a jq command, so break it up to make it easy to read
+        # Creates variables HDR_* for each RED_X, RED_Y, GREEN_X, etc.
+
         local jq_data=' .frames[].side_data_list[]'
         local jq_meta=' | select(.side_data_type | strings | test("Mastering display metadata"))'
         local jq_map=' | to_entries|map("HDR_\(.key | ascii_upcase)=\"\(.value|tostring)\"")|.[]'
@@ -159,6 +163,21 @@ detect_hdr() {
 
         if [ $? -ne 0 ]; then
             echo "ERROR: Couldn't read HDR10 metadata"
+            exit 1
+        fi
+        eval $hdrvars
+
+        # Grab Content light level metadata
+        # Also a heck of a jq command...
+        # Creates variables HDR_MAX_CONTENT and HDR_MAX_AVERAGE
+        jq_data=' .frames[].side_data_list[]'
+        jq_meta=' | select(.side_data_type | strings | test("Content light level metadata"))'
+        jq_map=' | to_entries|map("HDR_\(.key | ascii_upcase)=\"\(.value|tostring)\"")|.[]'
+
+        hdrvars=$(echo $probe | jq -r "${jq_data}${jq_meta}${jq_map}")
+
+        if [ $? -ne 0 ]; then
+            echo "ERROR: Couldn't read HDR10 metadata (content light level)"
             exit 1
         fi
         eval $hdrvars
@@ -226,7 +245,8 @@ detect_crop() {
         if [ "$offset_x" -eq 0 ] && [ "$offset_y" -eq 0 ]; then
             SETTINGS_CROP=''
         else
-            SETTINGS_CROP="crop=${x}:${y}:${offset_x}:${offset_y}"
+            SETTINGS_CROP="crop=${x}:${y}:${offset_x}:${offset_y}
+"
         fi
 
         # Establish what the video size is for later
@@ -269,7 +289,8 @@ detect_tracks() {
         local lang=$(echo $aprobe | jq -r ".streams[$i].tags.language")
 
         local new="-map 0:${index} --metadata:s:${index} language=${lang}"
-        SETTINGS_AUDIO_TRACKS="${SETTINGS_AUDIO_TRACKS}    ${new} \\\n"
+        SETTINGS_AUDIO_TRACKS="${SETTINGS_AUDIO_TRACKS}    ${new} \\
+"
 
         # Grab next track
         i=$((i+1))
@@ -283,7 +304,8 @@ detect_tracks() {
         local lang=$(echo $sprobe | jq -r ".streams[$i].tags.language")
 
         local new="-map 0:${index} --metadata:s:${index} language=${lang}"
-        SETTINGS_SUB_TRACKS="${SETTINGS_SUB_TRACKS}    ${new} \\\n"
+        SETTINGS_SUB_TRACKS="${SETTINGS_SUB_TRACKS}    ${new} \\
+"
 
         # Grab next track
         i=$((i+1))
@@ -294,12 +316,13 @@ detect_tracks() {
 # Determine which codec we should use for encoding.
 # SD content should use H.264, and all higher resolutions should use H.265/HEVC.
 detect_codec() {
+    # Fill in codec, preset, quality & options
     if [ $SETTINGS_WIDTH -le 854 ] || [ $SETTINGS_HEIGHT -le 480 ] ; then
         SETTINGS_VIDEO_CODEC="    -c:v libx264 \\
         -preset ${X264_PRESET} \\
         -crf ${X264_CRF} \\
         ${X264_OPTS} \\
-        -x264-params ${X264_PARAMS} \\
+        -x264-params ${X264_PARAMS}
 "
     else
         SETTINGS_VIDEO_CODEC="    -c:v libx265 \\
@@ -307,8 +330,22 @@ detect_codec() {
         -crf ${X265_CRF} \\
         -pix_fmt ${X265_PIXEL_FORMAT} \\
         ${X265_OPTS} \\
-        -x265_params ${X265_PARAMS} \\
+        -x265_params ${X265_PARAMS}"
+
+        # Fill in HDR10 metadata, if any
+        if [ $FOUND_HDR10 ]; then
+            local hdr_opts="colorprim=${HDR_COLOR_PRIMARIES}:transfer=${HDR_COLOR_TRANSFER}:colormatrix=${HDR_COLOR_SPACE}"
+            hdr_opts="${hdr_opts}:master-display=\"G(${HDR_GREEN_X},${HDR_GREEN_Y})B(${HDR_BLUE_X},${HDR_BLUE_Y})R(${HDR_RED_X},${HDR_RED_Y})WP(${HDR_WHITE_POINT_X},${HDR_WHITE_POINT_Y})L(${HDR_MAX_LUMINANCE},${HDR_MIN_LUMINANCE})\""
+            if [ "$HDR_MAX_CONTENT" != "" ]; then
+                hdr_opts="${hdr_opts}:max-cll=\"${HDR_MAX_CONTENT},${HDR_MAX_AVERAGE}\""
+            fi
+
+            SETTINGS_VIDEO_CODEC="${SETTINGS_VIDEO_CODEC}:${hdr_opts}"
+        fi
+
+        SETTINGS_VIDEO_CODEC="${SETTINGS_VIDEO_CODEC} \\
 "
+
     fi
 }
 
@@ -327,7 +364,8 @@ ffmpeg -n
     -metadata title=\"\" \\
     -map 0:v \\
 ${SETTINGS_AUDIO_TRACKS}${SETTINGS_SUB_TRACKS}    -c copy \\
-${SETTINGS_VIDEO_CODEC}
+${SETTINGS_VIDEO_CODEC}    \"Output.mkv\"
+    2>&1 | tee logs/Output.log
 "
 
     if [ "$SETTINGS_CROP" != '' ]; then
